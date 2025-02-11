@@ -8,6 +8,16 @@ from sklearn.utils.multiclass import unique_labels
 from statsmodels.discrete.discrete_model import MNLogit
 from statsmodels.miscmodels.ordinal_model import OrderedModel
 
+import numpy as np
+import pandas as pd
+
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils.multiclass import unique_labels
+
+from statsmodels.discrete.discrete_model import MNLogit
+from statsmodels.miscmodels.ordinal_model import OrderedModel
+
 
 class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
     """
@@ -15,33 +25,28 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
 
     This classifier wraps the OrderedModel from statsmodels to perform ordinal
     logistic regression. Alternatively, when `ordinal_target` is False, it uses
-    the MNLogit model.
+    the MNLogit model (multinomial logistic regression).
 
     Parameters
     ----------
     ordinal_target : bool, default False
-        Whether the target variable is ordinal. If True, the target is converted to
-        an ordered categorical variable using `ordinal_labels`.
+        If True, the target variable is treated as ordinal and converted to an
+        ordered categorical variable using `ordinal_labels`.
     ordinal_labels : list-like, optional
         The ordered labels to use when converting the target variable. Must be provided
         if `ordinal_target` is True. The length must be at least 3.
     distribution : str, default 'logit'
         The distribution used in the ordinal model. Typically 'logit' or 'probit'.
-    method : str, default 'bfgs'
-        The optimization method used to fit the model.
-    maxiter : int, default 1000
-        Maximum number of iterations for the optimizer.
-    disp : bool, default False
-        If True, displays convergence messages during model fitting.
     **fit_params : dict
         Additional keyword arguments passed to the model's fit method.
     """
+
     def __init__(self,
                  ordinal_target=False,
                  ordinal_labels=None,
                  distribution='logit',
                  **fit_params):
-        # When using ordinal target, ensure ordered labels are provided and there are at least 3 classes.
+        # If target is ordinal, ensure that ordinal_labels are provided and valid.
         if ordinal_target:
             assert ordinal_labels is not None, (
                 'Ordered labels must be provided to create an ordinal target when "ordinal_target" is True'
@@ -49,7 +54,7 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
             assert len(ordinal_labels) >= 3, "The number of ordered labels must be at least 3."
 
         self.ordinal_target = ordinal_target
-        self.ordered_labels = ordinal_labels
+        self.ordinal_labels = ordinal_labels
         self.distribution = distribution
         self.fit_params = fit_params
 
@@ -68,7 +73,7 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
             An ordered categorical version of the target variable.
         """
         y_ord = pd.Series(
-            pd.Categorical(y, categories=self.ordered_labels, ordered=True),
+            pd.Categorical(y, categories=self.ordinal_labels, ordered=True),
             index=y.index,
             name=y.name
         )
@@ -91,7 +96,7 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
         self : object
             The fitted classifier.
         """
-        # Ensure X and y are provided as pandas DataFrame and Series, respectively.
+        # Ensure input types: X must be a DataFrame and y must be a Series.
         assert isinstance(X, pd.DataFrame), "X must be a pandas DataFrame."
         assert isinstance(y, pd.Series), "y must be a pandas Series."
 
@@ -99,9 +104,9 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
         self._sample_index = X.index
         self._feature_names = X.columns.to_list()
 
-        # Validate X and y.
+        # Validate X and y using scikit-learn utilities.
         X, y = check_X_y(X, y, y_numeric=True)
-        # Reconstruct DataFrame and Series with original indices and column names.
+        # Reconstruct DataFrame and Series with the original indices and column names.
         X = pd.DataFrame(X, index=self._sample_index, columns=self._feature_names)
         y = pd.Series(y, index=self._sample_index)
 
@@ -109,23 +114,23 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
         self.classes_ = np.unique(y)
         self.n_classes_ = len(self.classes_)
 
-        # Ensure there are at least 3 classes for ordinal logistic regression.
+        # Ordinal logistic regression requires at least 3 classes.
         assert self.n_classes_ >= 3, "The number of classes must be at least 3 for ordinal logistic regression."
 
         # If ordinal_target is True, convert y to an ordered categorical variable.
         if self.ordinal_target:
-            # Ensure the provided ordered labels match the classes in y.
-            assert len(self.classes_) == len(self.ordered_labels), (
+            # Ensure that the provided ordered labels match the unique classes.
+            assert len(self.classes_) == len(self.ordinal_labels), (
                 "The number of classes must match the number of ordered labels."
             )
             y_ord = self._convert_target(y)
-            # Initialize the OrderedModel with ordered categorical target.
+            # Initialize the OrderedModel with the ordered categorical target.
             self.model_ = OrderedModel(endog=y_ord, exog=X, distr=self.distribution)
         else:
-            # Use the MNLogit model if not treating y as ordinal.
+            # Otherwise, use MNLogit for multinomial logistic regression.
             self.model_ = MNLogit(endog=y, exog=X)
 
-        # Fit the model using the specified optimization parameters.
+        # Fit the model using any additional parameters provided.
         self.result_ = self.model_.fit(**self.fit_params)
         return self
 
@@ -143,9 +148,9 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
         proba : array-like of shape (n_samples, n_classes)
             The predicted probability distribution over ordinal classes.
         """
-        # Ensure that the model has been fitted.
+        # Ensure the model has been fitted.
         check_is_fitted(self)
-        # Use the fitted result to predict probabilities.
+        # Predict probabilities using the fitted model and return as a numpy array.
         return self.result_.predict(exog=X).values
 
     def predict(self, X):
@@ -162,10 +167,9 @@ class OrdinalLogitClassifier(ClassifierMixin, BaseEstimator):
         y_pred : array-like of shape (n_samples,)
             The predicted ordinal class labels.
         """
-        # Ensure that the model has been fitted.
+        # Ensure the model has been fitted.
         check_is_fitted(self)
-        # Predict probabilities.
+        # Obtain predicted probabilities.
         proba = self.predict_proba(X)
         # Return the class with the highest predicted probability.
         return np.argmax(proba, axis=1)
-# =========================================================================================================

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from joblib import Parallel, delayed
-from .ordinal_framework import compute_joint_classification
+from .ordinal_framework import compute_joint_classification, compute_joint_probability
 from .metrics import classification_metric_nan
 
 
@@ -57,13 +57,23 @@ def grid_search_threshold(proba_bin, y_true, threshold_li, n_jobs=-1):
 
     # Define a helper function to evaluate one candidate threshold tuple.
     def evaluate_threshold(thres, proba_bin, y_true):
+
         res = {'threshold': thres}
-        # compute_joint_classification is assumed to return a tuple:
-        # (label_pos, label_neg, pred_label_bin, pred_label)
+
+        # Compute the joint probability of classification predictions.
+        y_pred_prob = compute_joint_probability(proba_bin)
+        # Remove the last column of y_pred_prob, which corresponds to the NULL (invalid) class.
+        y_pred_prob = y_pred_prob[:, :-1]
+
+        # Compute the joint classification predictions using the candidate threshold tuple.
         y_pred = compute_joint_classification(proba_bin, threshold=thres)
-        metric = classification_metric_nan(y_true, y_pred)
+
+        # Compute classification metrics
+        metric = classification_metric_nan(y_true, y_pred, y_pred_prob, nan_value=-1)
+
         res.update(metric)
         return copy.deepcopy(res)
+    # -----------------------------------------------------------------------
 
     # Run evaluations in parallel with a progress bar.
     results = Parallel(n_jobs=n_jobs)(

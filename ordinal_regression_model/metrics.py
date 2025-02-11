@@ -106,15 +106,18 @@ def classification_metric(y_true, y_pred, y_pred_prob, sample_weight='balanced')
     metrics : dict
         A dictionary containing the computed metrics.
     """
-    if sample_weight == 'balanced':
-        sample_weight = compute_sample_weight('balanced', y_true)
-    else:
-        assert isinstance(sample_weight, np.ndarray)
+    if isinstance(sample_weight, str):
+        if sample_weight == 'balanced':
+            sample_weight = compute_sample_weight('balanced', y_true)
+    elif isinstance(sample_weight, np.ndarray):
         assert len(sample_weight) == len(y_true)
+    else:
+        raise ValueError('Invalid sample_weight value. Must be "balanced" or an array-like object.')
 
     metrics = {
         'precision'                 : precision_score(y_true, y_pred, average='macro'),
         'recall'                    : recall_score(y_true, y_pred, average='macro'),
+        # For 'roc_auc' Target scores need to be probabilities for multiclass roc_auc, i.e. they should sum up to 1.0 over classes
         'roc_auc'                   : roc_auc_score(y_true, y_pred_prob, average='macro', multi_class='ovr'),
         # 'average_precision'         : average_precision_score(y_true, y_pred_prob, average='macro', multi_class='ovr'),
         'accuracy'                  : accuracy_score(y_true, y_pred),
@@ -122,9 +125,9 @@ def classification_metric(y_true, y_pred, y_pred_prob, sample_weight='balanced')
         'f1_macro'                  : f1_score(y_true, y_pred, average='macro'),
         'cohen_kappa'               : cohen_kappa_score(y_true, y_pred),
         'log_loss'                  : log_loss(y_true, y_pred_prob, normalize=True),
-        'balanced_log_loss'         : log_loss(y_true, y_pred_prob, normalize=True, sample_weight=sample_weight),
+        # 'balanced_log_loss'         : log_loss(y_true, y_pred_prob, normalize=True, sample_weight=sample_weight),
         'ranked_probability_score'  : ranked_probability_score(y_true, y_pred_prob),
-        'balanced_ranked_probability_score' : ranked_probability_score(y_true, y_pred_prob, sample_weight=sample_weight),
+        # 'balanced_ranked_probability_score' : ranked_probability_score(y_true, y_pred_prob, sample_weight=sample_weight),
     }
     return metrics
 # ========================================================================================================
@@ -237,45 +240,85 @@ def f1_with_nan(y_true, y_pred, nan_value=-1):
     valid_prop = (n_samples - n_nan) / n_samples
     return valid_prop * score
 # ----------------------------------------------------------------------------------------------------------------------
+def _cls_metric(y_true, y_pred, y_pred_prob, sample_weight):
+    metrics = {
+        'precision'                 : precision_score(y_true, y_pred, average='macro'),
+        'recall'                    : recall_score(y_true, y_pred, average='macro'),
+        'accuracy'                  : accuracy_score(y_true, y_pred),
+        'balanced_accuracy'         : balanced_accuracy_score(y_true, y_pred),
+        'f1_macro'                  : f1_score(y_true, y_pred, average='macro'),
+        'cohen_kappa'               : cohen_kappa_score(y_true, y_pred),
+        'log_loss'                  : log_loss(y_true, y_pred_prob, normalize=True),
+        # 'balanced_log_loss'         : log_loss(y_true, y_pred_prob, normalize=True, sample_weight=sample_weight),
+        'ranked_probability_score'  : ranked_probability_score(y_true, y_pred_prob),
+        # 'balanced_ranked_probability_score' : ranked_probability_score(y_true, y_pred_prob, sample_weight=sample_weight),
+    }
+    return metrics
+# ========================================================================================================
 def classification_metric_nan(y_true, y_pred, y_pred_prob, nan_value=-1):
     """
+    Compute classification metrics while handling missing predictions.
+
+    Missing predictions are indicated by y_pred values equal to nan_value. This function
+    filters out such samples, computes classification metrics on the remaining (valid) samples,
+    and then scales the resulting metrics by the proportion of valid samples.
+
+    Parameters
     ----------
     y_true : array-like of shape (n_samples,)
         True class labels.
     y_pred : array-like of shape (n_samples,)
-        Predicted class labels.
+        Predicted class labels, where a value equal to nan_value indicates a missing prediction.
+    y_pred_prob : array-like of shape (n_samples, n_classes)
+        Predicted class probabilities for each sample.
     nan_value : int or float, default=-1
         The value representing missing predictions.
 
     Returns
     -------
     metrics : dict
-        A dictionary containing the computed metrics.
+        A dictionary containing the computed metrics for the valid samples (e.g., accuracy,
+        balanced accuracy, etc.), scaled by the valid sample proportion. Also includes the key
+        'valid_sample_proportion'.
     """
-    # filter out samples with missing predictions
+    assert len(np.unique(y_true)) == y_pred_prob.shape[1], (
+        "The number of unique classes in y_true must match the number of columns in y_pred_prob."
+    )
+
+    # Create a boolean mask for valid predictions (i.e., predictions that are not nan_value).
     mask = y_pred != nan_value
 
-    # number of nan values
-    n_nan = np.sum(~mask)
-    # number of all samples
+    # Compute the total number of samples and the number of missing predictions.
     n_samples = len(y_true)
-    # proportion of valid samples
+    n_nan = np.sum(~mask)
     valid_prop = (n_samples - n_nan) / n_samples
 
-    # filter out samples with missing predictions
+    if valid_prop < 0.5:
+        # If all predictions are missing, return a dictionary of NaN values.
+        return {'valid_sample_proportion' : valid_prop}
+
+    # Filter out samples with missing predictions using explicit 2D indexing for y_pred_prob.
     y_true_valid = y_true[mask]
     y_pred_valid = y_pred[mask]
-    y_pred_prob_valid = y_pred_prob[mask]
+    y_pred_prob_valid = y_pred_prob[mask, :]
 
-    # compute balanced sample weight
-    sample_weight = compute_sample_weight('balanced', y_true_valid)
+    # Compute balanced sample weights for the entire dataset and then filter them.
+    sample_weight = compute_sample_weight('balanced', y_true)
     sample_weight_valid = sample_weight[mask]
 
-    # compute metrics for valid samples
-    metrics = classification_metric(y_true_valid, y_pred_valid, y_pred_prob_valid, sample_weight=sample_weight_valid)
-    # adjust metrics
-    metrics = {k : v * valid_prop for k, v in metrics.items()}
+    # Compute classification metrics for the valid samples.
+    # (Assumes that the function `classification_metric` is defined elsewhere.)
+    metrics = _cls_metric(
+        y_true_valid, y_pred_valid, y_pred_prob_valid, sample_weight=sample_weight_valid
+    )
+
+    # Scale each metric by the proportion of valid samples.
+    # (Note: log_loss is not scaled by the valid proportion.)
+    for k, v in metrics.items():
+        if k not in ['log_loss']:
+            metrics[k] = v * valid_prop
     metrics['valid_sample_proportion'] = valid_prop
 
     return metrics
-# ----------------------------------------------------------------------------------------------------------------------
+# ========================================================================================================
+
